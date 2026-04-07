@@ -1,0 +1,13 @@
+.git
+.github
+.gitignore
+.env
+.env.example
+.env.docker
+go-musthave-metrics-iter28
+README.md
+TODO.md
+*.md
+Dockerfile
+docker-compose.yml
+cmd/salutespeech-check
