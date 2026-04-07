@@ -9,7 +9,6 @@ import (
 	"smart-meeting-notes/internal/config"
 )
 
-// New создает logger на базе zap.
 func New(cfg config.Config) (*zap.Logger, error) {
 	level := strings.ToLower(strings.TrimSpace(cfg.LogLevel))
 	if level == "" {
@@ -24,6 +23,5 @@ func New(cfg config.Config) (*zap.Logger, error) {
 	zapCfg := zap.NewProductionConfig()
 	zapCfg.Level = zap.NewAtomicLevelAt(zapLevel)
 
-	// ProductionConfig уже включает JSON-логирование и корректные уровни.
 	return zapCfg.Build()
 }

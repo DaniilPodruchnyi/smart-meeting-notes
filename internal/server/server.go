@@ -30,7 +30,6 @@ func New(cfg config.Config, lg *zap.Logger, pingSvc *usecase.PingService) *Serve
 	}
 }
 
-// Run запускает HTTP сервер и корректно останавливает его при отмене ctx.
 func (s *Server) Run(ctx context.Context) error {
 	errCh := make(chan error, 1)
 
@@ -47,7 +46,6 @@ func (s *Server) Run(ctx context.Context) error {
 		_ = s.httpServer.Shutdown(shutdownCtx)
 		return nil
 	case err := <-errCh:
-		// ListenAndServe возвращает ErrServerClosed при Shutdown.
 		if err == nil || err == http.ErrServerClosed {
 			return nil
 		}
