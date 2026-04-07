@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"smart-meeting-notes/internal/app/usecase"
+	"smart-meeting-notes/internal/middleware"
 )
 
 func NewRouter(pingSvc *usecase.PingService) http.Handler {
@@ -29,5 +30,6 @@ func NewRouter(pingSvc *usecase.PingService) http.Handler {
 		})
 	})
 
-	return mux
+	handler := middleware.GzipCompress(mux)
+	return middleware.GzipDecompress(handler)
 }

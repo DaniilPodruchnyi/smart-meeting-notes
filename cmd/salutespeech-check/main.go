@@ -47,7 +47,7 @@ func main() {
 		ct = "application/octet-stream"
 	}
 
-	client := salutespeech.NewClient(cfg.SaluteSpeech)
+	client := salutespeech.NewClient(cfg.SaluteSpeech, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
