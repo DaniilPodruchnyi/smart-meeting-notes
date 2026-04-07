@@ -165,6 +165,13 @@ func (s *MeetingService) handleList(ctx context.Context, chatID int64) error {
 
 // handleGet обрабатывает команду /get
 func (s *MeetingService) handleGet(ctx context.Context, chatID int64, meetingID string) error {
+	s.logger.Info("handleGet called", zap.Int64("chat_id", chatID), zap.String("meeting_id", meetingID))
+
+	if s.meetingRepo == nil {
+		s.sendError(chatID, "Репозиторий встреч недоступен")
+		return nil
+	}
+
 	id, err := strconv.ParseInt(meetingID, 10, 64)
 	if err != nil {
 		s.sendError(chatID, "Неверный ID встречи")
@@ -172,12 +179,24 @@ func (s *MeetingService) handleGet(ctx context.Context, chatID int64, meetingID 
 	}
 
 	meeting, err := s.meetingRepo.GetByID(ctx, id)
+	s.logger.Info("GetByID result", zap.Int64("id", id), zap.Any("meeting", meeting), zap.Error(err))
 	if err != nil {
 		s.sendError(chatID, "Встреча не найдена")
 		return err
 	}
 
-	s.sendToUser(chatID, meeting.Transcript)
+	transcript := meeting.Transcript
+	s.logger.Info("sending transcript", zap.Int64("chat_id", chatID), zap.Int("len", len(transcript)))
+
+	if len([]rune(transcript)) > 4000 {
+		runes := []rune(transcript)
+		part1 := string(runes[:4000])
+		part2 := string(runes[4000:])
+		s.sendToUser(chatID, part1)
+		s.sendToUser(chatID, part2)
+	} else {
+		s.sendToUser(chatID, transcript)
+	}
 	return nil
 }
 
@@ -323,11 +342,16 @@ func (s *MeetingService) handleAudio(ctx context.Context, chatID int64, audioDat
 		}
 	}
 
-	preview := transcript
-	if len(preview) > 4000 {
-		preview = preview[:4000] + "..."
+	transcriptText := transcript
+	if len([]rune(transcriptText)) > 4000 {
+		runes := []rune(transcriptText)
+		part1 := string(runes[:4000])
+		part2 := string(runes[4000:])
+		s.sendToUser(chatID, "Транскрипция:\n\n"+part1)
+		s.sendToUser(chatID, part2)
+	} else {
+		s.sendToUser(chatID, "Транскрипция:\n\n"+transcriptText)
 	}
-	s.sendToUser(chatID, "Транскрипция:\n\n"+preview)
 
 	return nil
 }

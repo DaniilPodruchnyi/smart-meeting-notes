@@ -24,12 +24,9 @@ func convertAudioToWav(audioData []byte) ([]byte, string, string, error) {
 	format := detectFormat(audioData)
 
 	switch format {
-	case "audio/ogg":
-		// Telegram voice messages in OGG format - convert to PCM using ffmpeg
+	case "audio/ogg", "video/mp4", "video/webm", "video/avi", "audio/mpeg":
+		// Все форматы конвертируем через ffmpeg - это универсальнее
 		data, err := convertOggToPcm(audioData)
-		return data, "audio/pcm;rate=16000", "PCM_S16LE", err
-	case "audio/mpeg", "audio/mp3":
-		data, err := convertMp3ToWav(audioData)
 		return data, "audio/pcm;rate=16000", "PCM_S16LE", err
 	case "audio/wav":
 		data, err := convertWavToWav(audioData)
@@ -76,13 +73,18 @@ func detectFormat(data []byte) string {
 		return ""
 	}
 
-	// OGG формат
+	// OGG формат (Telegram voice messages)
 	if bytes.Equal(data[:4], []byte("OggS")) {
 		return "audio/ogg"
 	}
-	// MP3 формат (MPEG Audio Layer 3)
-	if bytes.Equal(data[:3], []byte("\xFF\xFB")) || bytes.Equal(data[:3], []byte("\xFF\xF3")) || bytes.Equal(data[:3], []byte("\xFF\xF2")) {
-		return "audio/mpeg"
+	// MP3 формат - ID3v2 tag or MPEG frame sync
+	if len(data) >= 3 {
+		if bytes.Equal(data[:3], []byte("ID3")) {
+			return "audio/mpeg"
+		}
+		if data[0] == 0xFF && (data[1]&0xE0) == 0xE0 {
+			return "audio/mpeg"
+		}
 	}
 	// WAV формат
 	if bytes.Equal(data[:4], []byte("RIFF")) && bytes.Equal(data[8:12], []byte("WAVE")) {
@@ -92,9 +94,17 @@ func detectFormat(data []byte) string {
 	if bytes.Equal(data[:4], []byte("fLaC")) {
 		return "audio/flac"
 	}
-	// MP4/M4A формат
+	// MP4/M4A формат (включая video mp4)
 	if bytes.Equal(data[:4], []byte("ftyp")) {
-		return "audio/mp4"
+		return "video/mp4"
+	}
+	// WebM формат
+	if bytes.HasPrefix(data, []byte("\x1a\x45\xdf\xa3")) {
+		return "video/webm"
+	}
+	// AVI формат
+	if bytes.Equal(data[:4], []byte("RIFF")) && bytes.Equal(data[8:12], []byte("AVI ")) {
+		return "video/avi"
 	}
 
 	return ""
