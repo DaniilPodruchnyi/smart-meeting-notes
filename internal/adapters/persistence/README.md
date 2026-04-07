@@ -14,6 +14,7 @@
 - Сохранение и выдача транскрипции для `/get <id>`.
 - `/list`: список встреч пользователя по дате.
 - `/find`: поиск по ключевым словам — `LIKE` / полнотекстовый поиск PostgreSQL (`to_tsvector` / GIN) и т.д.
+- **Семантический поиск**: реализуйте `usecase.SemanticMeetingStore` (pgvector, см. `migrations/001_meeting_embeddings_pgvector.example.sql`); индексация через `SemanticSearchService.IndexMeetingTranscript`.
 
 ## Правила
 

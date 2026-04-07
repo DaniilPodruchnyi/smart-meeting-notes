@@ -14,6 +14,24 @@ type Config struct {
 	HTTPAddress  string
 	LogLevel     string
 	SaluteSpeech SaluteSpeechConfig
+	GigaChat     GigaChatConfig
+}
+
+// GigaChatConfig — OAuth через тот же шлюз ngw + запросы к API GigaChat.
+type GigaChatConfig struct {
+	AuthURL               string
+	AuthorizationKey      string
+	Scope                 string
+	APIBaseURL            string
+	ChatCompletionsPath   string
+	EmbeddingsPath        string
+	EmbeddingsModel       string
+	EmbeddingsQueryPrefix string // опционально: инструкция перед запросом для retrieval (см. доку GigaChat embeddings)
+	Model                 string
+	Temperature           float64
+	TopP                  float64
+	MaxTokens             int
+	HTTPTimeout           time.Duration
 }
 
 type SaluteSpeechConfig struct {
@@ -67,6 +85,21 @@ func Load(envPath string) (Config, error) {
 			PollTimeout:      getEnvDuration("SALUTE_SPEECH_POLL_TIMEOUT", 2*time.Minute),
 			HTTPTimeout:      getEnvDuration("SALUTE_SPEECH_HTTP_TIMEOUT", 30*time.Second),
 		},
+		GigaChat: GigaChatConfig{
+			AuthURL:               getEnv("GIGACHAT_AUTH_URL", "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"),
+			AuthorizationKey:      getEnv("GIGACHAT_AUTHORIZATION_KEY", ""),
+			Scope:                 getEnv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS"),
+			APIBaseURL:            getEnv("GIGACHAT_API_BASE_URL", "https://gigachat.devices.sberbank.ru/api/v1"),
+			ChatCompletionsPath:   getEnv("GIGACHAT_CHAT_COMPLETIONS_PATH", "/chat/completions"),
+			EmbeddingsPath:        getEnv("GIGACHAT_EMBEDDINGS_PATH", "/embeddings"),
+			EmbeddingsModel:       getEnv("GIGACHAT_EMBEDDINGS_MODEL", "Embeddings"),
+			EmbeddingsQueryPrefix: getEnv("GIGACHAT_EMBEDDINGS_QUERY_PREFIX", ""),
+			Model:                 getEnv("GIGACHAT_MODEL", "GigaChat-2-Max"),
+			Temperature:           getEnvFloat("GIGACHAT_TEMPERATURE", 0.7),
+			TopP:                  getEnvFloat("GIGACHAT_TOP_P", 0),
+			MaxTokens:             getEnvInt("GIGACHAT_MAX_TOKENS", 1024),
+			HTTPTimeout:           getEnvDuration("GIGACHAT_HTTP_TIMEOUT", 60*time.Second),
+		},
 	}
 
 	return cfg, nil
@@ -90,6 +123,18 @@ func getEnvInt(key string, fallback int) int {
 		return fallback
 	}
 	return n
+}
+
+func getEnvFloat(key string, fallback float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return fallback
+	}
+	return f
 }
 
 func getEnvDuration(key string, fallback time.Duration) time.Duration {
