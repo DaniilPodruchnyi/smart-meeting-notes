@@ -126,7 +126,7 @@ func (s *MeetingService) handleTranscriptCommand(ctx context.Context, msg queue.
 		return s.handleGet(ctx, msg.ChatID, meetingID)
 	}
 
-	return s.handleAudio(ctx, msg.ChatID, []byte(payload))
+	return s.handleAudio(ctx, msg.ChatID, msg.Data)
 }
 
 // handleList обрабатывает команду /list

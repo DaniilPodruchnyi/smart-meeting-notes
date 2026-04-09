@@ -26,6 +26,7 @@ type Client struct {
 	meetingService *usecase.MeetingService
 	wg             sync.WaitGroup
 	ctx            context.Context
+	httpClient     *http.Client
 }
 
 // New создает новый экземпляр Telegram клиента
@@ -44,12 +45,18 @@ func New(cfg config.TelegramConfig, lg *zap.Logger, q *queue.Queue, meetingSvc *
 		return nil, fmt.Errorf("telegram: создание бота: %w", err)
 	}
 
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	httpClient := &http.Client{Transport: tr}
+
 	return &Client{
 		bot:            bot,
 		logger:         lg,
 		cfg:            cfg,
 		q:              q,
 		meetingService: meetingSvc,
+		httpClient:     httpClient,
 	}, nil
 }
 
@@ -172,7 +179,7 @@ func (c *Client) handleVoice(ctx telebot.Context) error {
 		return ctx.Send("Не удалось скачать файл")
 	}
 
-	queueMsg := queue.Message{Type: queue.MessageTypeTranscript, ChatID: ctx.Chat().ID, Payload: string(audioData)}
+	queueMsg := queue.Message{Type: queue.MessageTypeTranscript, ChatID: ctx.Chat().ID, Data: audioData}
 	c.q.Publish(queueMsg)
 	return ctx.Send("Аудио получено, обрабатываю...")
 }
@@ -202,22 +209,19 @@ func (c *Client) handleAudio(ctx telebot.Context) error {
 		return ctx.Send("Не удалось скачать файл")
 	}
 
-	queueMsg := queue.Message{Type: queue.MessageTypeTranscript, ChatID: ctx.Chat().ID, Payload: string(audioData)}
+	queueMsg := queue.Message{Type: queue.MessageTypeTranscript, ChatID: ctx.Chat().ID, Data: audioData}
 	c.q.Publish(queueMsg)
 	return ctx.Send("Аудио получено, обрабатываю...")
 }
 
 // downloadFile скачивает файл по URL
 func (c *Client) downloadFile(ctx context.Context, url string) ([]byte, error) {
-	tr := &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
-	httpClient := &http.Client{Transport: tr}
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	res, err := httpClient.Do(req)
+	res, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

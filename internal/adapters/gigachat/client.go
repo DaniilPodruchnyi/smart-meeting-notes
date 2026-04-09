@@ -84,13 +84,7 @@ func (c *Client) getToken(ctx context.Context) (string, error) {
 	req.Header.Add("Authorization", "Basic "+auth)
 	req.Header.Add("RqUID", rqUID)
 
-	// Настройка TLS с игнорированием проверки сертификата для российских CA
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MaxVersion: tls.VersionTLS12, MinVersion: tls.VersionTLS10},
-	}
-	httpClientWithTLS := &http.Client{Transport: tr, Timeout: 30 * time.Second}
-
-	res, err := httpClientWithTLS.Do(req)
+	res, err := c.httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("запрос авторизации не удался: %w", err)
 	}
@@ -162,12 +156,7 @@ func (c *Client) Chat(ctx context.Context, prompt string) (string, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-	httpClientWithTLS := &http.Client{Transport: tr}
-
-	res, err := httpClientWithTLS.Do(req)
+	res, err := c.httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("запрос не удался: %w", err)
 	}
