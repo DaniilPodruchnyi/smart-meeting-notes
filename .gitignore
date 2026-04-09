@@ -32,3 +32,5 @@ go.work.sum
 # .vscode/
 
 go-musthave-metrics-iter28
+
+.vscode

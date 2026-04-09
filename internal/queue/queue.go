@@ -20,6 +20,7 @@ type Message struct {
 	UserID    int64
 	ChatID    int64
 	Payload   string
+	Data      []byte
 	MeetingID int64
 }
 
