@@ -22,6 +22,11 @@ type Client struct {
 	logger               *zap.Logger
 }
 
+type TranscriptResult struct {
+	RawText        string
+	TextBySpeakers string
+}
+
 func NewClient(cfg config.SaluteSpeechConfig, tlsCfg config.TLSConfig, lg *zap.Logger) *Client {
 	timeout := cfg.HTTPTimeout
 	if timeout <= 0 {
@@ -59,6 +64,17 @@ func (z *zapLogger) Error(msg string, keysAndValues ...interface{}) {
 // Transcribe проходит 4 шага async распознавания:
 // upload -> create task -> polling status -> download result.
 func (c *Client) Transcribe(ctx context.Context, audio []byte, contentType string) (string, error) {
+	result, err := c.transcribe(ctx, audio, contentType)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(result.RawText) != "" {
+		return result.RawText, nil
+	}
+	return strings.TrimSpace(result.TextBySpeakers), nil
+}
+
+func (c *Client) TranscribeDetailed(ctx context.Context, audio []byte, contentType string) (TranscriptResult, error) {
 	return c.transcribe(ctx, audio, contentType)
 }
 
