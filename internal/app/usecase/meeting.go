@@ -8,6 +8,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"smart-meeting-notes/internal/adapters/salutespeech"
 	"smart-meeting-notes/internal/app/repository"
 	"smart-meeting-notes/internal/domain"
 	"smart-meeting-notes/internal/queue"
@@ -27,6 +28,7 @@ type MeetingService struct {
 // SaluteSpeechClient интерфейс для транскрипции аудио
 type SaluteSpeechClient interface {
 	Transcribe(ctx context.Context, audio []byte, contentType string) (string, error)
+	TranscribeDetailed(ctx context.Context, audio []byte, contentType string) (salutespeech.TranscriptResult, error)
 }
 
 // GigaChatClient интерфейс для работы с GigaChat
@@ -187,16 +189,12 @@ func (s *MeetingService) handleGet(ctx context.Context, chatID int64, meetingID 
 
 	transcript := meeting.Transcript
 	s.logger.Info("sending transcript", zap.Int64("chat_id", chatID), zap.Int("len", len(transcript)))
-
-	if len([]rune(transcript)) > 4000 {
-		runes := []rune(transcript)
-		part1 := string(runes[:4000])
-		part2 := string(runes[4000:])
-		s.sendToUser(chatID, part1)
-		s.sendToUser(chatID, part2)
-	} else {
-		s.sendToUser(chatID, transcript)
+	if strings.TrimSpace(transcript) == "" {
+		s.sendToUser(chatID, "Транскрипция для этой встречи пока пустая.")
+		return nil
 	}
+
+	s.sendLongMessage(chatID, "Полная транскрипция:\n\n"+transcript)
 	return nil
 }
 
@@ -326,39 +324,219 @@ func (s *MeetingService) handleAudio(ctx context.Context, chatID int64, audioDat
 		fullContentType = contentType + ";codecs=" + audioEncoding
 	}
 
-	transcript, err := s.saluteClient.Transcribe(ctx, converted, fullContentType)
+	tr, err := s.saluteClient.TranscribeDetailed(ctx, converted, fullContentType)
 	if err != nil {
 		s.sendError(chatID, "Ошибка при транскрипции: "+err.Error())
 		return err
 	}
-	transcript = strings.TrimSpace(transcript)
-	if transcript == "" {
+	rawTranscript := strings.TrimSpace(tr.RawText)
+	roleTranscript := strings.TrimSpace(tr.TextBySpeakers)
+	s.logger.Info(
+		"transcription received",
+		zap.Int64("chat_id", chatID),
+		zap.Int("raw_len", len(rawTranscript)),
+		zap.Int("roles_len", len(roleTranscript)),
+		zap.Int("roles_speakers", speakerCount(roleTranscript)),
+	)
+	if rawTranscript == "" {
 		s.sendToUser(chatID, "Не удалось распознать речь. Похоже, сообщение пустое или слишком тихое.")
 		return nil
+	}
+	if roleTranscript == "" {
+		roleTranscript = rawTranscript
+	}
+
+	// Если SaluteSpeech не разделил спикеров, пробуем сделать читаемую ролевую версию через LLM.
+	needRoleFallback := !hasAtLeastTwoSpeakers(roleTranscript) || roleTranscript == rawTranscript
+	if needRoleFallback && s.gigaClient != nil {
+		s.logger.Info(
+			"role transcript fallback started",
+			zap.Int64("chat_id", chatID),
+			zap.Bool("equal_to_raw", roleTranscript == rawTranscript),
+			zap.Int("speaker_count_before", speakerCount(roleTranscript)),
+		)
+		roleTranscript, err = s.buildRoleTranscript(ctx, rawTranscript)
+		if err != nil {
+			s.logger.Warn("не удалось построить ролевую транскрипцию", zap.Error(err))
+			roleTranscript = rawTranscript
+		} else {
+			s.logger.Info(
+				"role transcript fallback finished",
+				zap.Int64("chat_id", chatID),
+				zap.Int("roles_len_after", len(roleTranscript)),
+				zap.Int("speaker_count_after", speakerCount(roleTranscript)),
+			)
+		}
+	}
+
+	summary := ""
+	if s.gigaClient != nil {
+		summary, err = s.buildSummary(ctx, roleTranscript)
+		if err != nil {
+			s.logger.Warn("не удалось получить summary", zap.Error(err))
+		} else {
+			s.logger.Info(
+				"summary generated",
+				zap.Int64("chat_id", chatID),
+				zap.Int("summary_len_before_clean", len(summary)),
+			)
+		}
 	}
 
 	if s.meetingRepo != nil {
 		meeting := &domain.Meeting{
-			UserID:     user.ID,
-			Transcript: transcript,
+			UserID:        user.ID,
+			TranscriptRaw: rawTranscript,
+			Transcript:    roleTranscript,
+			Summary:       summary,
 		}
 		if err := s.meetingRepo.Create(ctx, meeting); err != nil {
 			s.logger.Error("ошибка сохранения встречи", zap.Error(err))
 		}
+
+		if summary != "" {
+			summary = cleanTelegramText(summary)
+			s.logger.Info(
+				"summary prepared for telegram",
+				zap.Int64("chat_id", chatID),
+				zap.Int("summary_len_after_clean", len(summary)),
+			)
+			s.sendLongMessage(chatID, "Краткая выжимка:\n\n"+summary+"\n\nПолная транскрипция доступна по команде /get "+strconv.FormatInt(meeting.ID, 10))
+			s.logger.Info(
+				"meeting stored with summary",
+				zap.Int64("chat_id", chatID),
+				zap.Int64("meeting_id", meeting.ID),
+				zap.Int("raw_len", len(rawTranscript)),
+				zap.Int("roles_len", len(roleTranscript)),
+			)
+			return nil
+		}
 	}
 
-	transcriptText := transcript
-	if len([]rune(transcriptText)) > 4000 {
-		runes := []rune(transcriptText)
-		part1 := string(runes[:4000])
-		part2 := string(runes[4000:])
-		s.sendToUser(chatID, "Транскрипция:\n\n"+part1)
-		s.sendToUser(chatID, part2)
-	} else {
-		s.sendToUser(chatID, "Транскрипция:\n\n"+transcriptText)
-	}
+	// Если summary недоступно, отправляем транскрипцию как fallback.
+	s.sendLongMessage(chatID, "Транскрипция:\n\n"+roleTranscript)
 
 	return nil
+}
+
+func (s *MeetingService) buildSummary(ctx context.Context, transcript string) (string, error) {
+	prompt := "Ты аналитик встреч. Ниже транскрипция с возможными метками спикеров (например, \"Спикер 1\", \"Спикер 2\"). " +
+		"Сделай краткую и содержательную выжимку на русском языке.\n\n" +
+		"Требования к формату:\n" +
+		"1) Верни структурированный текст для Telegram.\n" +
+		"2) Используй блоки в таком виде:\n" +
+		"Ключевые моменты:\n- пункт\n- пункт\n\n" +
+		"Решения:\n- пункт\n\n" +
+		"Договоренности и следующие шаги:\n- пункт\n\n" +
+		"3) Внутри блоков используй списки только через '-' (дефис).\n" +
+		"4) Разрешены простые визуальные разделители типа '-----'.\n" +
+		"5) Если данных мало, явно укажи это отдельным пунктом.\n\n" +
+		"Транскрипция:\n" + transcript
+
+	summary, err := s.gigaClient.Chat(ctx, prompt)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(summary), nil
+}
+
+func (s *MeetingService) sendLongMessage(chatID int64, text string) {
+	runes := []rune(text)
+	for len(runes) > 0 {
+		chunkSize := 4000
+		if len(runes) < chunkSize {
+			chunkSize = len(runes)
+		}
+		s.sendToUser(chatID, string(runes[:chunkSize]))
+		runes = runes[chunkSize:]
+	}
+}
+
+func (s *MeetingService) buildRoleTranscript(ctx context.Context, rawTranscript string) (string, error) {
+	prompt := "Ниже сырая транскрипция разговора. Преобразуй ее в диалог по ролям.\n" +
+		"Правила:\n" +
+		"1) Верни только текст диалога без markdown.\n" +
+		"2) Используй формат строк: \"Спикер 1: ...\", \"Спикер 2: ...\".\n" +
+		"3) Сохраняй смысл и порядок реплик, не выдумывай факты.\n" +
+		"4) Если уверенности в разделении мало, сделай минимально вероятное разбиение.\n\n" +
+		"Сырая транскрипция:\n" + rawTranscript
+
+	roleTranscript, err := s.gigaClient.Chat(ctx, prompt)
+	if err != nil {
+		return "", err
+	}
+	roleTranscript = cleanTelegramText(roleTranscript)
+	return strings.TrimSpace(roleTranscript), nil
+}
+
+func hasAtLeastTwoSpeakers(transcript string) bool {
+	lines := strings.Split(transcript, "\n")
+	speakers := map[string]struct{}{}
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		colon := strings.Index(line, ":")
+		if colon <= 0 {
+			continue
+		}
+		prefix := strings.TrimSpace(line[:colon])
+		if strings.HasPrefix(prefix, "Спикер") {
+			speakers[prefix] = struct{}{}
+		}
+	}
+	return len(speakers) >= 2
+}
+
+func speakerCount(transcript string) int {
+	lines := strings.Split(transcript, "\n")
+	speakers := map[string]struct{}{}
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		colon := strings.Index(line, ":")
+		if colon <= 0 {
+			continue
+		}
+		prefix := strings.TrimSpace(line[:colon])
+		if strings.HasPrefix(prefix, "Спикер") {
+			speakers[prefix] = struct{}{}
+		}
+	}
+	return len(speakers)
+}
+
+func cleanTelegramText(text string) string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "### ", "")
+	text = strings.ReplaceAll(text, "## ", "")
+	text = strings.ReplaceAll(text, "# ", "")
+	text = strings.ReplaceAll(text, "**", "")
+	text = strings.ReplaceAll(text, "`", "")
+	text = strings.ReplaceAll(text, "__", "")
+	text = strings.ReplaceAll(text, "•", "-")
+
+	lines := strings.Split(text, "\n")
+	cleaned := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			if len(cleaned) > 0 && cleaned[len(cleaned)-1] == "" {
+				continue
+			}
+			cleaned = append(cleaned, "")
+			continue
+		}
+		line = strings.TrimPrefix(line, "* ")
+		if strings.HasPrefix(line, "-") {
+			line = "- " + strings.TrimSpace(strings.TrimPrefix(line, "-"))
+		}
+		cleaned = append(cleaned, line)
+	}
+	return strings.TrimSpace(strings.Join(cleaned, "\n"))
 }
 
 // ParseCommand разбирает текст команды на имя и аргументы
