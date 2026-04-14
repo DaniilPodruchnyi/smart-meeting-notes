@@ -3,6 +3,8 @@ package usecase
 import (
 	"context"
 	"fmt"
+	"math"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -12,6 +14,11 @@ import (
 	"smart-meeting-notes/internal/app/repository"
 	"smart-meeting-notes/internal/domain"
 	"smart-meeting-notes/internal/queue"
+)
+
+const (
+	smartFindMinScore = 0.35
+	smartFindTopK     = 5
 )
 
 // MeetingService сервис для управления встречами
@@ -34,6 +41,7 @@ type SaluteSpeechClient interface {
 // GigaChatClient интерфейс для работы с GigaChat
 type GigaChatClient interface {
 	Chat(ctx context.Context, prompt string) (string, error)
+	Embedding(ctx context.Context, text string) ([]float64, error)
 }
 
 // NewMeetingService создает новый экземпляр сервиса встреч
@@ -123,6 +131,10 @@ func (s *MeetingService) handleTranscriptCommand(ctx context.Context, msg queue.
 		query := strings.TrimPrefix(payload, "find ")
 		return s.handleFind(ctx, msg.ChatID, query)
 	}
+	if strings.HasPrefix(payload, "smart-find ") {
+		query := strings.TrimPrefix(payload, "smart-find ")
+		return s.handleSmartFind(ctx, msg.ChatID, query)
+	}
 	if strings.HasPrefix(payload, "get ") {
 		meetingID := strings.TrimPrefix(payload, "get ")
 		return s.handleGet(ctx, msg.ChatID, meetingID)
@@ -161,6 +173,105 @@ func (s *MeetingService) handleList(ctx context.Context, chatID int64) error {
 		sb.WriteString(fmt.Sprintf("ID: %d | Дата: %s\n", m.ID, m.CreatedAt.Format("2006-01-02 15:04")))
 	}
 
+	s.sendToUser(chatID, sb.String())
+	return nil
+}
+
+func (s *MeetingService) handleSmartFind(ctx context.Context, chatID int64, query string) error {
+	if s.userRepo == nil || s.meetingRepo == nil {
+		s.sendError(chatID, "Репозиторий не инициализирован")
+		return nil
+	}
+	if s.gigaClient == nil {
+		s.sendError(chatID, "Семантический поиск недоступен")
+		return nil
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		s.sendError(chatID, "Пустой запрос")
+		return nil
+	}
+
+	user, err := s.userRepo.GetByTelegramID(ctx, chatID)
+	if err != nil {
+		s.sendError(chatID, "Вы не зарегистрированы")
+		return err
+	}
+
+	queryEmb, err := s.gigaClient.Embedding(ctx, query)
+	if err != nil {
+		s.sendError(chatID, "Не удалось построить embedding запроса: "+err.Error())
+		return err
+	}
+
+	meetings, err := s.meetingRepo.GetByUserID(ctx, user.ID)
+	if err != nil {
+		s.sendError(chatID, "Ошибка получения встреч: "+err.Error())
+		return err
+	}
+	if len(meetings) == 0 {
+		s.sendToUser(chatID, "Встречи не найдены.")
+		return nil
+	}
+
+	type scored struct {
+		meeting         domain.Meeting
+		score           float64
+		summaryScore    float64
+		transcriptScore float64
+		reason          string
+		reasonSnippet   string
+	}
+	scoredMeetings := make([]scored, 0, len(meetings))
+	meetingsWithVectors := 0
+	for _, m := range meetings {
+		if len(m.SummaryEmb) > 0 || len(m.TranscriptEmb) > 0 {
+			meetingsWithVectors++
+		}
+		summaryScore := cosineSimilarity(queryEmb, m.SummaryEmb)
+		transcriptScore := cosineSimilarity(queryEmb, m.TranscriptEmb)
+		score := max(summaryScore, transcriptScore)
+		if score < smartFindMinScore {
+			continue
+		}
+		reason, snippet := buildSmartFindReason(m, summaryScore, transcriptScore)
+		scoredMeetings = append(scoredMeetings, scored{
+			meeting:         m,
+			score:           score,
+			summaryScore:    summaryScore,
+			transcriptScore: transcriptScore,
+			reason:          reason,
+			reasonSnippet:   snippet,
+		})
+	}
+	if len(scoredMeetings) == 0 {
+		if meetingsWithVectors == 0 {
+			s.sendToUser(chatID, "smart-find пока недоступен: у встреч нет embeddings. Проверьте доступ к GigaChat Embeddings API (в логах сейчас может быть 402 Payment Required).")
+			return nil
+		}
+		s.sendToUser(chatID, fmt.Sprintf("По smart-find ничего релевантного не найдено (порог %.2f).", smartFindMinScore))
+		return nil
+	}
+
+	sort.Slice(scoredMeetings, func(i, j int) bool { return scoredMeetings[i].score > scoredMeetings[j].score })
+	limit := smartFindTopK
+	if len(scoredMeetings) < limit {
+		limit = len(scoredMeetings)
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("smart-find: найдено %d релевантных встреч (порог %.2f)\n\n", len(scoredMeetings), smartFindMinScore))
+	for i := 0; i < limit; i++ {
+		item := scoredMeetings[i]
+		m := item.meeting
+		sb.WriteString(fmt.Sprintf("- ID %d | релевантность %.3f | %s\n", m.ID, item.score, m.CreatedAt.Format("2006-01-02 15:04")))
+		sb.WriteString(fmt.Sprintf("  Причина: %s\n", item.reason))
+		if item.reasonSnippet != "" {
+			sb.WriteString("  Фрагмент: " + item.reasonSnippet + "\n")
+		}
+		sb.WriteString("\n")
+	}
+	sb.WriteString("Для полной транскрипции: /get <id>")
 	s.sendToUser(chatID, sb.String())
 	return nil
 }
@@ -370,6 +481,16 @@ func (s *MeetingService) handleAudio(ctx context.Context, chatID int64, audioDat
 	}
 
 	summary := ""
+	summaryEmb := []float64(nil)
+	transcriptEmb := []float64(nil)
+
+	if s.gigaClient != nil {
+		transcriptEmb, err = s.gigaClient.Embedding(ctx, rawTranscript)
+		if err != nil {
+			s.logger.Warn("не удалось получить embedding транскрипции", zap.Error(err))
+		}
+	}
+
 	if s.gigaClient != nil {
 		summary, err = s.buildSummary(ctx, roleTranscript)
 		if err != nil {
@@ -380,6 +501,10 @@ func (s *MeetingService) handleAudio(ctx context.Context, chatID int64, audioDat
 				zap.Int64("chat_id", chatID),
 				zap.Int("summary_len_before_clean", len(summary)),
 			)
+			summaryEmb, err = s.gigaClient.Embedding(ctx, summary)
+			if err != nil {
+				s.logger.Warn("не удалось получить embedding summary", zap.Error(err))
+			}
 		}
 	}
 
@@ -389,6 +514,8 @@ func (s *MeetingService) handleAudio(ctx context.Context, chatID int64, audioDat
 			TranscriptRaw: rawTranscript,
 			Transcript:    roleTranscript,
 			Summary:       summary,
+			TranscriptEmb: transcriptEmb,
+			SummaryEmb:    summaryEmb,
 		}
 		if err := s.meetingRepo.Create(ctx, meeting); err != nil {
 			s.logger.Error("ошибка сохранения встречи", zap.Error(err))
@@ -537,6 +664,48 @@ func cleanTelegramText(text string) string {
 		cleaned = append(cleaned, line)
 	}
 	return strings.TrimSpace(strings.Join(cleaned, "\n"))
+}
+
+func cosineSimilarity(a, b []float64) float64 {
+	if len(a) == 0 || len(b) == 0 || len(a) != len(b) {
+		return 0
+	}
+	var dot float64
+	var normA float64
+	var normB float64
+	for i := range a {
+		dot += a[i] * b[i]
+		normA += a[i] * a[i]
+		normB += b[i] * b[i]
+	}
+	if normA == 0 || normB == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
+}
+
+func buildSmartFindReason(meeting domain.Meeting, summaryScore, transcriptScore float64) (string, string) {
+	if summaryScore >= transcriptScore && strings.TrimSpace(meeting.Summary) != "" {
+		return fmt.Sprintf("запрос ближе к выжимке встречи (score %.3f)", summaryScore), oneLineSnippet(meeting.Summary, 140)
+	}
+	if strings.TrimSpace(meeting.TranscriptRaw) != "" {
+		return fmt.Sprintf("запрос ближе к полной транскрипции (score %.3f)", transcriptScore), oneLineSnippet(meeting.TranscriptRaw, 140)
+	}
+	return fmt.Sprintf("запрос ближе к полной транскрипции (score %.3f)", transcriptScore), oneLineSnippet(meeting.Transcript, 140)
+}
+
+func oneLineSnippet(text string, maxRunes int) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	text = strings.ReplaceAll(text, "\n", " ")
+	text = strings.Join(strings.Fields(text), " ")
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	return string(runes[:maxRunes]) + "..."
 }
 
 // ParseCommand разбирает текст команды на имя и аргументы

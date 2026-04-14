@@ -70,10 +70,14 @@ func (db *DB) Migrate(ctx context.Context) error {
 		audio_file_id VARCHAR(255),
 		transcript_raw TEXT,
 		transcript TEXT,
-		summary TEXT
+		summary TEXT,
+		transcript_emb DOUBLE PRECISION[],
+		summary_emb DOUBLE PRECISION[]
 	);
 
 	ALTER TABLE meetings ADD COLUMN IF NOT EXISTS transcript_raw TEXT;
+	ALTER TABLE meetings ADD COLUMN IF NOT EXISTS transcript_emb DOUBLE PRECISION[];
+	ALTER TABLE meetings ADD COLUMN IF NOT EXISTS summary_emb DOUBLE PRECISION[];
 	UPDATE meetings SET transcript_raw = transcript WHERE transcript_raw IS NULL;
 
 	CREATE INDEX IF NOT EXISTS idx_meetings_user_id ON meetings(user_id);

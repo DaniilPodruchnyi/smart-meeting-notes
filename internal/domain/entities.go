@@ -16,4 +16,6 @@ type Meeting struct {
 	TranscriptRaw string
 	Transcript    string
 	Summary       string
+	TranscriptEmb []float64
+	SummaryEmb    []float64
 }

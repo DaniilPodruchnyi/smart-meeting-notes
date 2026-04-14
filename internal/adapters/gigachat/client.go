@@ -132,6 +132,11 @@ type ChatResponse struct {
 	} `json:"choices"`
 }
 
+type EmbeddingRequest struct {
+	Model string   `json:"model"`
+	Input []string `json:"input"`
+}
+
 // Chat отправляет запрос к GigaChat и возвращает ответ
 func (c *Client) Chat(ctx context.Context, prompt string) (string, error) {
 	token, err := c.getToken(ctx)
@@ -176,4 +181,50 @@ func (c *Client) Chat(ctx context.Context, prompt string) (string, error) {
 	}
 
 	return chatResp.Choices[0].Message.Content, nil
+}
+
+// Embedding получает векторное представление текста через GigaChat API.
+func (c *Client) Embedding(ctx context.Context, text string) ([]float64, error) {
+	token, err := c.getToken(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("получение токена: %w", err)
+	}
+
+	apiURL := "https://gigachat.devices.sberbank.ru/api/v1/embeddings"
+	payload, _ := json.Marshal(EmbeddingRequest{
+		Model: "Embeddings",
+		Input: []string{text},
+	})
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	res, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("запрос embeddings не удался: %w", err)
+	}
+	defer res.Body.Close()
+
+	body, _ := io.ReadAll(res.Body)
+	if res.StatusCode != 200 {
+		return nil, fmt.Errorf("embeddings запрос не удался: %s, body: %s", res.Status, string(body))
+	}
+
+	var resp struct {
+		Data []struct {
+			Embedding []float64 `json:"embedding"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return nil, fmt.Errorf("декодирование embeddings: %w", err)
+	}
+	if len(resp.Data) == 0 || len(resp.Data[0].Embedding) == 0 {
+		return nil, fmt.Errorf("пустой embeddings ответ")
+	}
+
+	return resp.Data[0].Embedding, nil
 }
