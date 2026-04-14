@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -14,10 +15,17 @@ import (
 type Config struct {
 	HTTPAddress  string
 	LogLevel     string
+	TLS          TLSConfig
 	SaluteSpeech SaluteSpeechConfig
 	Telegram     TelegramConfig
 	Database     DatabaseConfig
 	GigaChat     GigaChatConfig
+}
+
+// TLSConfig общие параметры TLS для исходящих HTTP-клиентов (Telegram, SaluteSpeech, GigaChat).
+type TLSConfig struct {
+	// InsecureSkipVerify отключает проверку сертификата. Только dev/тесты: TLS_INSECURE_SKIP_VERIFY=true
+	InsecureSkipVerify bool
 }
 
 // GigaChatConfig конфигурация GigaChat API
@@ -27,7 +35,12 @@ type GigaChatConfig struct {
 
 // DatabaseConfig конфигурация базы данных
 type DatabaseConfig struct {
-	DSN string
+	DSN             string `json:"dsn"`
+	MaxConns        int32  `json:"max_conns"`
+	MinConns        int32  `json:"min_conns"`
+	MaxConnLifetime string `json:"max_conn_lifetime"`
+	MaxConnIdleTime string `json:"max_conn_idle_time"`
+	HealthCheckTime string `json:"health_check_period"`
 }
 
 // TelegramConfig конфигурация Telegram бота
@@ -74,8 +87,16 @@ func Load(envPath string) (Config, error) {
 	cfg := Config{
 		HTTPAddress: getEnv("HTTP_ADDRESS", ":8080"),
 		LogLevel:    getEnv("LOG_LEVEL", "info"),
+		TLS: TLSConfig{
+			InsecureSkipVerify: getEnvBool("TLS_INSECURE_SKIP_VERIFY", false),
+		},
 		Database: DatabaseConfig{
-			DSN: getEnv("DATABASE_DSN", "postgres://smartmeet:smartmeet123@localhost:5432/smartmeet?sslmode=disable"),
+			DSN:             getEnv("DATABASE_DSN", "postgres://smartmeet:smartmeet123@localhost:5432/smartmeet?sslmode=disable"),
+			MaxConns:        int32(getEnvInt("DB_MAX_CONNS", 10)),
+			MinConns:        int32(getEnvInt("DB_MIN_CONNS", 2)),
+			MaxConnLifetime: getEnv("DB_MAX_CONN_LIFETIME", "1h"),
+			MaxConnIdleTime: getEnv("DB_MAX_CONN_IDLE_TIME", "30m"),
+			HealthCheckTime: getEnv("DB_HEALTHCHECK_PERIOD", "1m"),
 		},
 		GigaChat: GigaChatConfig{
 			APIKey: getEnv("GIGACHAT_API_KEY", ""),
@@ -115,6 +136,21 @@ func getEnv(key, fallback string) string {
 }
 
 // getEnvInt возвращает целочисленное значение переменной окружения
+func getEnvBool(key string, fallback bool) bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if v == "" {
+		return fallback
+	}
+	switch v {
+	case "1", "true", "yes", "y", "on":
+		return true
+	case "0", "false", "no", "n", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
 func getEnvInt(key string, fallback int) int {
 	v := os.Getenv(key)
 	if v == "" {
@@ -146,6 +182,7 @@ func getEnvDuration(key string, fallback time.Duration) time.Duration {
 type JSONConfig struct {
 	HTTPAddress  string             `json:"http_address"`
 	LogLevel     string             `json:"log_level"`
+	TLS          *TLSConfig         `json:"tls,omitempty"`
 	Database     DatabaseConfig     `json:"database"`
 	GigaChat     GigaChatConfig     `json:"gigachat"`
 	SaluteSpeech SaluteSpeechConfig `json:"salutespeech"`
@@ -169,19 +206,48 @@ func LoadFromFile(filename string) (Config, error) {
 	}
 
 	cfg := Config{
-		HTTPAddress:  getEnv("HTTP_ADDRESS", jsonCfg.HTTPAddress),
-		LogLevel:     getEnv("LOG_LEVEL", jsonCfg.LogLevel),
-		Database:     jsonCfg.Database,
+		HTTPAddress: getEnv("HTTP_ADDRESS", jsonCfg.HTTPAddress),
+		LogLevel:    getEnv("LOG_LEVEL", jsonCfg.LogLevel),
+		Database: DatabaseConfig{
+			DSN:             getEnv("DATABASE_DSN", jsonCfg.Database.DSN),
+			MaxConns:        int32(getEnvInt("DB_MAX_CONNS", int(jsonCfg.Database.MaxConns))),
+			MinConns:        int32(getEnvInt("DB_MIN_CONNS", int(jsonCfg.Database.MinConns))),
+			MaxConnLifetime: getEnv("DB_MAX_CONN_LIFETIME", jsonCfg.Database.MaxConnLifetime),
+			MaxConnIdleTime: getEnv("DB_MAX_CONN_IDLE_TIME", jsonCfg.Database.MaxConnIdleTime),
+			HealthCheckTime: getEnv("DB_HEALTHCHECK_PERIOD", jsonCfg.Database.HealthCheckTime),
+		},
 		GigaChat:     jsonCfg.GigaChat,
 		Telegram:     jsonCfg.Telegram,
 		SaluteSpeech: jsonCfg.SaluteSpeech,
 	}
+	if jsonCfg.TLS != nil {
+		cfg.TLS = *jsonCfg.TLS
+	}
+	cfg.TLS.InsecureSkipVerify = getEnvBool("TLS_INSECURE_SKIP_VERIFY", cfg.TLS.InsecureSkipVerify)
 
 	if cfg.HTTPAddress == "" {
 		cfg.HTTPAddress = ":8080"
 	}
 	if cfg.LogLevel == "" {
 		cfg.LogLevel = "info"
+	}
+	if cfg.Database.DSN == "" {
+		cfg.Database.DSN = "postgres://smartmeet:smartmeet123@localhost:5432/smartmeet?sslmode=disable"
+	}
+	if cfg.Database.MaxConns == 0 {
+		cfg.Database.MaxConns = 10
+	}
+	if cfg.Database.MinConns == 0 {
+		cfg.Database.MinConns = 2
+	}
+	if cfg.Database.MaxConnLifetime == "" {
+		cfg.Database.MaxConnLifetime = "1h"
+	}
+	if cfg.Database.MaxConnIdleTime == "" {
+		cfg.Database.MaxConnIdleTime = "30m"
+	}
+	if cfg.Database.HealthCheckTime == "" {
+		cfg.Database.HealthCheckTime = "1m"
 	}
 
 	return cfg, nil

@@ -2,7 +2,6 @@ package salutespeech
 
 import (
 	"context"
-	"crypto/tls"
 	"net/http"
 	"strings"
 	"sync"
@@ -11,6 +10,7 @@ import (
 	"go.uber.org/zap"
 
 	"smart-meeting-notes/internal/config"
+	"smart-meeting-notes/internal/pkg/httptls"
 )
 
 type Client struct {
@@ -22,21 +22,17 @@ type Client struct {
 	logger               *zap.Logger
 }
 
-func NewClient(cfg config.SaluteSpeechConfig, lg *zap.Logger) *Client {
+func NewClient(cfg config.SaluteSpeechConfig, tlsCfg config.TLSConfig, lg *zap.Logger) *Client {
 	timeout := cfg.HTTPTimeout
 	if timeout <= 0 {
 		timeout = 30 * time.Second
-	}
-
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
 
 	c := &Client{
 		cfg: cfg,
 		httpClient: &http.Client{
 			Timeout:   timeout,
-			Transport: tr,
+			Transport: httptls.NewTransport(tlsCfg.InsecureSkipVerify),
 		},
 		logger: lg,
 	}

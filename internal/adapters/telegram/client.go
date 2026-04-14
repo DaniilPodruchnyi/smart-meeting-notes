@@ -2,7 +2,6 @@ package telegram
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +13,7 @@ import (
 
 	"smart-meeting-notes/internal/app/usecase"
 	"smart-meeting-notes/internal/config"
+	"smart-meeting-notes/internal/pkg/httptls"
 	"smart-meeting-notes/internal/queue"
 )
 
@@ -30,7 +30,7 @@ type Client struct {
 }
 
 // New создает новый экземпляр Telegram клиента
-func New(cfg config.TelegramConfig, lg *zap.Logger, q *queue.Queue, meetingSvc *usecase.MeetingService) (*Client, error) {
+func New(cfg config.TelegramConfig, tlsCfg config.TLSConfig, lg *zap.Logger, q *queue.Queue, meetingSvc *usecase.MeetingService) (*Client, error) {
 	if cfg.BotToken == "" {
 		return nil, fmt.Errorf("telegram: токен бота пуст")
 	}
@@ -45,10 +45,7 @@ func New(cfg config.TelegramConfig, lg *zap.Logger, q *queue.Queue, meetingSvc *
 		return nil, fmt.Errorf("telegram: создание бота: %w", err)
 	}
 
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}
-	httpClient := &http.Client{Transport: tr}
+	httpClient := &http.Client{Transport: httptls.NewTransport(tlsCfg.InsecureSkipVerify)}
 
 	return &Client{
 		bot:            bot,

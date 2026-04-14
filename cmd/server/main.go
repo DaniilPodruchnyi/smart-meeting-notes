@@ -68,6 +68,9 @@ func main() {
 		zap.String("http_address", cfg.HTTPAddress),
 		zap.String("log_level", cfg.LogLevel),
 		zap.String("db_dsn", cfg.Database.DSN),
+		zap.Int32("db_max_conns", cfg.Database.MaxConns),
+		zap.Int32("db_min_conns", cfg.Database.MinConns),
+		zap.Bool("tls_insecure_skip_verify", cfg.TLS.InsecureSkipVerify),
 	)
 
 	// Инициализация очереди сообщений
@@ -76,11 +79,12 @@ func main() {
 	// Подключение к базе данных
 	var db *postgres.DB
 	if cfg.Database.DSN != "" {
-		db, err = postgres.New(cfg.Database.DSN)
+		db, err = postgres.New(ctx, cfg.Database)
 		if err != nil {
 			lg.Warn("подключение к базе данных не удалось", zap.Error(err))
 		} else {
-			if err := db.Migrate(); err != nil {
+			defer db.Close()
+			if err := db.Migrate(ctx); err != nil {
 				lg.Warn("миграция базы данных не удалась", zap.Error(err))
 			}
 			lg.Info("база данных инициализирована")
@@ -92,14 +96,14 @@ func main() {
 	// Инициализация клиента SaluteSpeech
 	var saluteClient *salutespeech.Client
 	if cfg.SaluteSpeech.AuthorizationKey != "" {
-		saluteClient = salutespeech.NewClient(cfg.SaluteSpeech, lg)
+		saluteClient = salutespeech.NewClient(cfg.SaluteSpeech, cfg.TLS, lg)
 		lg.Info("клиент salutespeech инициализирован")
 	}
 
 	// Инициализация клиента GigaChat
 	var gigaClient *gigachat.Client
 	if cfg.GigaChat.APIKey != "" {
-		gigaClient = gigachat.New(cfg.GigaChat)
+		gigaClient = gigachat.New(cfg.GigaChat, cfg.TLS)
 		lg.Info("клиент gigachat инициализирован")
 	}
 
@@ -112,7 +116,7 @@ func main() {
 
 	telegramCfg := cfg.Telegram
 	if !telegramCfg.IsZero() {
-		tgClient, err = telegram.New(telegramCfg, lg, q, nil)
+		tgClient, err = telegram.New(telegramCfg, cfg.TLS, lg, q, nil)
 		if err != nil {
 			lg.Warn("инициализация telegram клиента не удалась", zap.Error(err))
 		} else {

@@ -3,7 +3,6 @@ package gigachat
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,8 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"smart-meeting-notes/internal/config"
+	"smart-meeting-notes/internal/pkg/httptls"
+
+	"github.com/google/uuid"
 )
 
 // generateUUID генерирует UUID для RqUID заголовка
@@ -30,15 +31,12 @@ type Client struct {
 }
 
 // New создает новый экземпляр GigaChat клиента
-func New(cfg config.GigaChatConfig) *Client {
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true, MaxVersion: tls.VersionTLS12, MinVersion: tls.VersionTLS12},
-	}
+func New(cfg config.GigaChatConfig, tlsCfg config.TLSConfig) *Client {
 	return &Client{
 		cfg: cfg,
 		httpClient: &http.Client{
 			Timeout:   30 * time.Second,
-			Transport: tr,
+			Transport: httptls.NewTransport(tlsCfg.InsecureSkipVerify),
 		},
 	}
 }
