@@ -331,6 +331,11 @@ func (s *MeetingService) handleAudio(ctx context.Context, chatID int64, audioDat
 		s.sendError(chatID, "Ошибка при транскрипции: "+err.Error())
 		return err
 	}
+	transcript = strings.TrimSpace(transcript)
+	if transcript == "" {
+		s.sendToUser(chatID, "Не удалось распознать речь. Похоже, сообщение пустое или слишком тихое.")
+		return nil
+	}
 
 	if s.meetingRepo != nil {
 		meeting := &domain.Meeting{

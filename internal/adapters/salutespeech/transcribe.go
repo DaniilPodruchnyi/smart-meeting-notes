@@ -228,6 +228,11 @@ func (c *Client) downloadResult(ctx context.Context, responseFileID string) (str
 // extractTextFromResponse извлекает текст из ответа SaluteSpeech API
 func extractTextFromResponse(response string) string {
 	response = strings.TrimSpace(response)
+	if response == "" {
+		return ""
+	}
+
+	parsedKnownJSON := false
 
 	// Проверяем, начинается ли с массива
 	if strings.HasPrefix(response, "[") {
@@ -239,6 +244,7 @@ func extractTextFromResponse(response string) string {
 			} `json:"results"`
 		}
 		if err := json.Unmarshal([]byte(response), &results); err == nil {
+			parsedKnownJSON = true
 			var text strings.Builder
 			for _, r := range results {
 				for _, item := range r.Results {
@@ -255,6 +261,7 @@ func extractTextFromResponse(response string) string {
 			if text.Len() > 0 {
 				return strings.TrimSpace(text.String())
 			}
+			return ""
 		}
 	} else if strings.HasPrefix(response, "{") {
 		// Это объект
@@ -265,6 +272,7 @@ func extractTextFromResponse(response string) string {
 			} `json:"results"`
 		}
 		if err := json.Unmarshal([]byte(response), &result); err == nil {
+			parsedKnownJSON = true
 			var text strings.Builder
 			for _, r := range result.Results {
 				if r.Text != "" {
@@ -279,7 +287,14 @@ func extractTextFromResponse(response string) string {
 			if text.Len() > 0 {
 				return strings.TrimSpace(text.String())
 			}
+			return ""
 		}
+	}
+
+	// Если это JSON-ответ, но не удалось извлечь распознанный текст, возвращаем пустую строку.
+	// Это лучше, чем отправлять пользователю сырой технический payload.
+	if parsedKnownJSON || strings.HasPrefix(response, "[") || strings.HasPrefix(response, "{") {
+		return ""
 	}
 
 	// Если не удалось распарсить, возвращаем как есть
