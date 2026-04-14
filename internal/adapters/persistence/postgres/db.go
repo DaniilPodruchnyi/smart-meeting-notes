@@ -68,12 +68,17 @@ func (db *DB) Migrate(ctx context.Context) error {
 		user_id INTEGER NOT NULL REFERENCES users(id),
 		created_at TIMESTAMP NOT NULL DEFAULT NOW(),
 		audio_file_id VARCHAR(255),
+		transcript_raw TEXT,
 		transcript TEXT,
 		summary TEXT
 	);
 
+	ALTER TABLE meetings ADD COLUMN IF NOT EXISTS transcript_raw TEXT;
+	UPDATE meetings SET transcript_raw = transcript WHERE transcript_raw IS NULL;
+
 	CREATE INDEX IF NOT EXISTS idx_meetings_user_id ON meetings(user_id);
 	CREATE INDEX IF NOT EXISTS idx_meetings_transcript_trgm ON meetings USING gin (transcript gin_trgm_ops);
+	CREATE INDEX IF NOT EXISTS idx_meetings_transcript_raw_trgm ON meetings USING gin (transcript_raw gin_trgm_ops);
 	`
 	_, err := db.Exec(ctx, schema)
 	return err
