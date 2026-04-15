@@ -3,8 +3,6 @@ package usecase
 import (
 	"context"
 	"fmt"
-	"math"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -131,8 +129,8 @@ func (s *MeetingService) handleTranscriptCommand(ctx context.Context, msg queue.
 		query := strings.TrimPrefix(payload, "find ")
 		return s.handleFind(ctx, msg.ChatID, query)
 	}
-	if strings.HasPrefix(payload, "smart-find ") {
-		query := strings.TrimPrefix(payload, "smart-find ")
+	if strings.HasPrefix(payload, "smart_find ") {
+		query := strings.TrimPrefix(payload, "smart_find ")
 		return s.handleSmartFind(ctx, msg.ChatID, query)
 	}
 	if strings.HasPrefix(payload, "get ") {
@@ -204,7 +202,7 @@ func (s *MeetingService) handleSmartFind(ctx context.Context, chatID int64, quer
 		return err
 	}
 
-	meetings, err := s.meetingRepo.GetByUserID(ctx, user.ID)
+	meetings, err := s.meetingRepo.SmartSearch(ctx, user.ID, queryEmb, smartFindMinScore, smartFindTopK)
 	if err != nil {
 		s.sendError(chatID, "Ошибка получения встреч: "+err.Error())
 		return err
@@ -214,60 +212,19 @@ func (s *MeetingService) handleSmartFind(ctx context.Context, chatID int64, quer
 		return nil
 	}
 
-	type scored struct {
-		meeting         domain.Meeting
-		score           float64
-		summaryScore    float64
-		transcriptScore float64
-		reason          string
-		reasonSnippet   string
-	}
-	scoredMeetings := make([]scored, 0, len(meetings))
-	meetingsWithVectors := 0
-	for _, m := range meetings {
-		if len(m.SummaryEmb) > 0 || len(m.TranscriptEmb) > 0 {
-			meetingsWithVectors++
-		}
-		summaryScore := cosineSimilarity(queryEmb, m.SummaryEmb)
-		transcriptScore := cosineSimilarity(queryEmb, m.TranscriptEmb)
-		score := max(summaryScore, transcriptScore)
-		if score < smartFindMinScore {
-			continue
-		}
-		reason, snippet := buildSmartFindReason(m, summaryScore, transcriptScore)
-		scoredMeetings = append(scoredMeetings, scored{
-			meeting:         m,
-			score:           score,
-			summaryScore:    summaryScore,
-			transcriptScore: transcriptScore,
-			reason:          reason,
-			reasonSnippet:   snippet,
-		})
-	}
-	if len(scoredMeetings) == 0 {
-		if meetingsWithVectors == 0 {
-			s.sendToUser(chatID, "smart-find пока недоступен: у встреч нет embeddings. Проверьте доступ к GigaChat Embeddings API (в логах сейчас может быть 402 Payment Required).")
-			return nil
-		}
+	if len(meetings) == 0 {
 		s.sendToUser(chatID, fmt.Sprintf("По smart-find ничего релевантного не найдено (порог %.2f).", smartFindMinScore))
 		return nil
 	}
 
-	sort.Slice(scoredMeetings, func(i, j int) bool { return scoredMeetings[i].score > scoredMeetings[j].score })
-	limit := smartFindTopK
-	if len(scoredMeetings) < limit {
-		limit = len(scoredMeetings)
-	}
-
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("smart-find: найдено %d релевантных встреч (порог %.2f)\n\n", len(scoredMeetings), smartFindMinScore))
-	for i := 0; i < limit; i++ {
-		item := scoredMeetings[i]
-		m := item.meeting
-		sb.WriteString(fmt.Sprintf("- ID %d | релевантность %.3f | %s\n", m.ID, item.score, m.CreatedAt.Format("2006-01-02 15:04")))
-		sb.WriteString(fmt.Sprintf("  Причина: %s\n", item.reason))
-		if item.reasonSnippet != "" {
-			sb.WriteString("  Фрагмент: " + item.reasonSnippet + "\n")
+	sb.WriteString(fmt.Sprintf("smart-find: найдено %d релевантных встреч (порог %.2f)\n\n", len(meetings), smartFindMinScore))
+	for _, m := range meetings {
+		reason, snippet := buildSmartFindReason(m, m.SummaryScore, m.TranscriptScore)
+		sb.WriteString(fmt.Sprintf("- ID %d | релевантность %.3f | %s\n", m.ID, m.SemanticScore, m.CreatedAt.Format("2006-01-02 15:04")))
+		sb.WriteString(fmt.Sprintf("  Причина: %s\n", reason))
+		if snippet != "" {
+			sb.WriteString("  Фрагмент: " + snippet + "\n")
 		}
 		sb.WriteString("\n")
 	}
@@ -664,24 +621,6 @@ func cleanTelegramText(text string) string {
 		cleaned = append(cleaned, line)
 	}
 	return strings.TrimSpace(strings.Join(cleaned, "\n"))
-}
-
-func cosineSimilarity(a, b []float64) float64 {
-	if len(a) == 0 || len(b) == 0 || len(a) != len(b) {
-		return 0
-	}
-	var dot float64
-	var normA float64
-	var normB float64
-	for i := range a {
-		dot += a[i] * b[i]
-		normA += a[i] * a[i]
-		normB += b[i] * b[i]
-	}
-	if normA == 0 || normB == 0 {
-		return 0
-	}
-	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
 }
 
 func buildSmartFindReason(meeting domain.Meeting, summaryScore, transcriptScore float64) (string, string) {

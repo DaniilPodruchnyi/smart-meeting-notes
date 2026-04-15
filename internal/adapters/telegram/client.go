@@ -68,7 +68,6 @@ func (c *Client) Run(ctx context.Context) error {
 	c.bot.Handle("/get", c.handleGet)
 	c.bot.Handle("/find", c.handleFind)
 	c.bot.Handle("/smart_find", c.handleSmartFind)
-	c.bot.Handle("/smartfind", c.handleSmartFind)
 	c.bot.Handle("/chat", c.handleChat)
 
 	// Обработчики сообщений
@@ -144,7 +143,7 @@ func (c *Client) handleSmartFind(ctx telebot.Context) error {
 	if len(args) < 1 {
 		return ctx.Send("Использование: /smart_find <запрос>")
 	}
-	msg := queue.Message{Type: queue.MessageTypeTranscript, ChatID: ctx.Chat().ID, Payload: "smart-find " + strings.Join(args, " ")}
+	msg := queue.Message{Type: queue.MessageTypeTranscript, ChatID: ctx.Chat().ID, Payload: "smart_find " + strings.Join(args, " ")}
 	c.q.Publish(msg)
 	return ctx.Send("Ищу семантически похожие встречи...")
 }
@@ -162,17 +161,6 @@ func (c *Client) handleChat(ctx telebot.Context) error {
 
 // handleText обрабатывает текстовые сообщения
 func (c *Client) handleText(ctx telebot.Context) error {
-	text := strings.TrimSpace(ctx.Text())
-	if strings.HasPrefix(text, "/smart-find ") {
-		// Фолбэк для привычного пользователю дефиса: Telegram не регистрирует такие команды как slash-command.
-		msg := queue.Message{
-			Type:    queue.MessageTypeTranscript,
-			ChatID:  ctx.Chat().ID,
-			Payload: "smart-find " + strings.TrimSpace(strings.TrimPrefix(text, "/smart-find")),
-		}
-		c.q.Publish(msg)
-		return ctx.Send("Ищу семантически похожие встречи...")
-	}
 	return c.handleChat(ctx)
 }
 

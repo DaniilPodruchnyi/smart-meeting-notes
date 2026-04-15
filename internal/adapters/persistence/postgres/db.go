@@ -56,6 +56,7 @@ func New(ctx context.Context, cfg config.DatabaseConfig) (*DB, error) {
 func (db *DB) Migrate(ctx context.Context) error {
 	schema := `
 	CREATE EXTENSION IF NOT EXISTS pg_trgm;
+	CREATE EXTENSION IF NOT EXISTS vector;
 
 	CREATE TABLE IF NOT EXISTS users (
 		id SERIAL PRIMARY KEY,
@@ -71,14 +72,50 @@ func (db *DB) Migrate(ctx context.Context) error {
 		transcript_raw TEXT,
 		transcript TEXT,
 		summary TEXT,
-		transcript_emb DOUBLE PRECISION[],
-		summary_emb DOUBLE PRECISION[]
+		transcript_emb vector,
+		summary_emb vector
 	);
 
 	ALTER TABLE meetings ADD COLUMN IF NOT EXISTS transcript_raw TEXT;
-	ALTER TABLE meetings ADD COLUMN IF NOT EXISTS transcript_emb DOUBLE PRECISION[];
-	ALTER TABLE meetings ADD COLUMN IF NOT EXISTS summary_emb DOUBLE PRECISION[];
+	ALTER TABLE meetings ADD COLUMN IF NOT EXISTS transcript_emb vector;
+	ALTER TABLE meetings ADD COLUMN IF NOT EXISTS summary_emb vector;
 	UPDATE meetings SET transcript_raw = transcript WHERE transcript_raw IS NULL;
+
+	DO $$
+	BEGIN
+		IF EXISTS (
+			SELECT 1
+			FROM information_schema.columns
+			WHERE table_name = 'meetings' AND column_name = 'transcript_emb' AND udt_name <> 'vector'
+		) THEN
+			ALTER TABLE meetings
+			ALTER COLUMN transcript_emb TYPE vector
+			USING (
+				CASE
+					WHEN transcript_emb IS NULL THEN NULL
+					ELSE ('[' || array_to_string(transcript_emb, ',') || ']')::vector
+				END
+			);
+		END IF;
+	END $$;
+
+	DO $$
+	BEGIN
+		IF EXISTS (
+			SELECT 1
+			FROM information_schema.columns
+			WHERE table_name = 'meetings' AND column_name = 'summary_emb' AND udt_name <> 'vector'
+		) THEN
+			ALTER TABLE meetings
+			ALTER COLUMN summary_emb TYPE vector
+			USING (
+				CASE
+					WHEN summary_emb IS NULL THEN NULL
+					ELSE ('[' || array_to_string(summary_emb, ',') || ']')::vector
+				END
+			);
+		END IF;
+	END $$;
 
 	CREATE INDEX IF NOT EXISTS idx_meetings_user_id ON meetings(user_id);
 	CREATE INDEX IF NOT EXISTS idx_meetings_transcript_trgm ON meetings USING gin (transcript gin_trgm_ops);

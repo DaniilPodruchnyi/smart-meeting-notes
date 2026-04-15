@@ -9,13 +9,16 @@ type User struct {
 }
 
 type Meeting struct {
-	ID            int64
-	UserID        int64
-	CreatedAt     time.Time
-	AudioFileID   string
-	TranscriptRaw string
-	Transcript    string
-	Summary       string
-	TranscriptEmb []float64
-	SummaryEmb    []float64
+	ID              int64
+	UserID          int64
+	CreatedAt       time.Time
+	AudioFileID     string
+	TranscriptRaw   string
+	Transcript      string
+	Summary         string
+	TranscriptEmb   []float64
+	SummaryEmb      []float64
+	SemanticScore   float64
+	SummaryScore    float64
+	TranscriptScore float64
 }
