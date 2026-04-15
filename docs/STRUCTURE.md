@@ -1,56 +1,46 @@
-# Структура проекта (по ТЗ + чистая архитектура)
+# Структура проекта
 
-Ниже — ориентировочное дерево папок на финал и что в них лежит логически. Точные имена пакетов можно слегка подстроить под команду, смысл слоёв сохраняется.
+Ниже схема, которая соответствует текущему состоянию репозитория.
 
-```
+```text
 smart-meeting-notes/
-├── cmd/
-│   └── server/
-│       └── main.go                 # Сборка зависимостей, запуск HTTP (если нужен) и/или бота
-├── docs/
-│   └── STRUCTURE.md                # Этот файл
+├── cmd/server/main.go
+├── docs/STRUCTURE.md
 ├── internal/
-│   ├── config/                     # Параметры из .env и окружения
-│   ├── logger/                     # Обёртка над zap
-│   ├── domain/                     # (опционально) сущности и доменные ошибки без внешних SDK
 │   ├── app/
-│   │   └── usecase/                # Сценарии: транскрипция→сохранение→саммари, поиск, /chat
+│   │   ├── repository/         # интерфейсы репозиториев
+│   │   └── usecase/            # бизнес-сценарии (meeting/ping)
 │   ├── adapters/
-│   │   ├── telegram/               # Модуль Телеграм: telebot, OnText/OnVoice/OnAudio, скачивание файлов
-│   │   ├── salutespeech/           # Клиент SaluteSpeech: upload → task → poll → результат
-│   │   ├── gigachat/               # Клиент GigaChat: саммари и ответы на вопросы
+│   │   ├── telegram/           # прием команд, голоса и аудио
+│   │   ├── salutespeech/       # STT-клиент
+│   │   ├── gigachat/           # chat + embeddings
 │   │   └── persistence/
-│   │       └── postgres/           # Репозитории: пользователи, встречи, транскрипции, поиск
-│   ├── queue/                      # Очередь задач через каналы; маршрутизация ответов по user ID
-│   └── server/
-│       └── transport/
-│           └── http/               # HTTP-роутер: health, при необходимости webhook Telegram
-├── go.mod
-├── .env.example
-├── TODO.md
+│   │       └── postgres/       # pgxpool, миграции, репозитории
+│   ├── config/                 # загрузка env/json-конфига
+│   ├── domain/                 # сущности User/Meeting
+│   ├── logger/                 # настройка zap
+│   ├── pkg/httptls/            # общий TLS transport для исходящих HTTP-клиентов
+│   ├── queue/                  # фоновая очередь задач и маршрутизация ответов
+│   └── server/                 # HTTP-сервер и transport/http
+├── docker-compose.yml
+├── Dockerfile
+├── Makefile
 └── README.md
 ```
 
-## Соответствие пунктам ТЗ
+## Как идут данные
 
-| Требование ТЗ | Где живёт в структуре |
-|---------------|------------------------|
-| Telegram-бот, команды, голос/аудио | `internal/adapters/telegram` + вызовы usecase |
-| Очередь и ответы «каждому своё» | `internal/queue` + типы задач с `telegram_user_id` |
-| SaluteSpeech (асинхронный REST) | `internal/adapters/salutespeech` |
-| GigaChat (саммари, /chat) | `internal/adapters/gigachat` + usecase в `internal/app/usecase` |
-| PostgreSQL, поиск, список, get по id | `internal/adapters/persistence/postgres` + usecase |
-| Конфиг, логи | `internal/config`, `internal/logger` |
-| Точка входа | `cmd/server/main.go` |
+1. Telegram-адаптер принимает команду или аудио.
+2. Сообщение попадает в очередь.
+3. `MeetingService` обрабатывает задачу:
+   - дергает SaluteSpeech для транскрипции;
+   - при необходимости вызывает GigaChat (summary, embeddings);
+   - сохраняет/читает данные через postgres-репозитории.
+4. Ответ уходит обратно пользователю в Telegram.
 
-## Поток данных (упрощённо)
+## Границы слоев
 
-```
-Telegram → adapter/telegram → queue → usecase
-                              ↓
-                    salutespeech / gigachat / postgres
-                              ↓
-                    queue / telegram → ответ пользователю
-```
-
-В корне каждого основного пакета есть `README.md` с конкретными задачами для реализации.
+- `usecase` не знает про детали SDK/SQL.
+- `adapters/*` реализуют интеграции с внешним миром.
+- `domain` хранит базовые сущности.
+- `cmd/server/main.go` отвечает только за сборку зависимостей и запуск.
