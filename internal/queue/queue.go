@@ -25,11 +25,7 @@ type Message struct {
 	MeetingID int64
 }
 
-type Handler func(ctx context.Context, msg Message) error
-
 type Queue struct {
-	mu       sync.RWMutex
-	subs     map[int64]map[MessageType]Handler // key: chatID
 	workers  int
 	msgChan  chan Message
 	workerFn func(ctx context.Context, msg Message) error
@@ -47,7 +43,6 @@ type Queue struct {
 func New(ctx context.Context, workers int) *Queue {
 	ctx, cancel := context.WithCancel(ctx)
 	return &Queue{
-		subs:    make(map[int64]map[MessageType]Handler),
 		workers: workers,
 		msgChan: make(chan Message, 100),
 		ctx:     ctx,
@@ -86,37 +81,14 @@ func (q *Queue) worker(ctx context.Context) {
 				func() {
 					defer func() {
 						if recover() != nil {
-							q.sendToSubs(msg.ChatID, Message{
-								Type:    MessageTypeError,
-								ChatID:  msg.ChatID,
-								Payload: "panic в обработчике очереди",
-							})
+							// Не даем панике в обработчике уронить воркер.
 						}
 					}()
 
-				if err := q.workerFn(ctx, msg); err != nil {
-					q.sendToSubs(msg.ChatID, Message{Type: MessageTypeError, ChatID: msg.ChatID, Payload: err.Error()})
-				}
+					_ = q.workerFn(ctx, msg)
 				}()
 			}
 		}
-	}
-}
-
-func (q *Queue) Subscribe(chatID int64, msgType MessageType, h Handler) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if q.subs[chatID] == nil {
-		q.subs[chatID] = make(map[MessageType]Handler)
-	}
-	q.subs[chatID][msgType] = h
-}
-
-func (q *Queue) Unsubscribe(chatID int64, msgType MessageType) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if q.subs[chatID] != nil {
-		delete(q.subs[chatID], msgType)
 	}
 }
 
@@ -133,34 +105,14 @@ func (q *Queue) Publish(msg Message) {
 	}
 }
 
-func (q *Queue) sendToSubs(chatID int64, msg Message) {
-	q.mu.RLock()
-	handlers, ok := q.subs[chatID]
-	if !ok {
-		q.mu.RUnlock()
-		return
-	}
-	handler, ok := handlers[msg.Type]
-	q.mu.RUnlock()
-
-	if ok {
-		_ = handler(q.ctx, msg)
-	}
-}
-
+// SendToUser отправляет сообщение напрямую в общий обработчик очереди.
+// Используется сервисом для обратной связи пользователю без публикации в канал.
 func (q *Queue) SendToUser(chatID int64, msg Message) {
-	q.mu.RLock()
-	handlers, ok := q.subs[chatID]
-	if !ok {
-		q.mu.RUnlock()
+	if q.workerFn == nil {
 		return
 	}
-	handler, ok := handlers[msg.Type]
-	q.mu.RUnlock()
-
-	if ok {
-		_ = handler(q.ctx, msg)
-	}
+	msg.ChatID = chatID
+	_ = q.workerFn(q.ctx, msg)
 }
 
 func (q *Queue) Stop() {
