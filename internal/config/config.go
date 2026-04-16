@@ -55,22 +55,24 @@ func (c TelegramConfig) IsZero() bool {
 
 // SaluteSpeechConfig конфигурация SaluteSpeech API
 type SaluteSpeechConfig struct {
-	AuthURL          string
-	AuthorizationKey string
-	Scope            string
-	APIBaseURL       string
-	UploadPath       string
-	RecognizePath    string
-	StatusPath       string
-	DownloadPath     string
-	Model            string
-	Language         string
-	AudioEncoding    string
-	SampleRate       int
-	ChannelsCount    int
-	PollInterval     time.Duration
-	PollTimeout      time.Duration
-	HTTPTimeout      time.Duration
+	AuthURL                  string
+	AuthorizationKey         string
+	Scope                    string
+	APIBaseURL               string
+	UploadPath               string
+	RecognizePath            string
+	StatusPath               string
+	DownloadPath             string
+	Model                    string
+	Language                 string
+	AudioEncoding            string
+	SampleRate               int
+	ChannelsCount            int
+	SpeakerSeparationEnabled bool
+	SpeakerMaxCount          int
+	PollInterval             time.Duration
+	PollTimeout              time.Duration
+	HTTPTimeout              time.Duration
 }
 
 // Load загружает конфигурацию из .env файла и переменных окружения
@@ -102,22 +104,24 @@ func Load(envPath string) (Config, error) {
 			APIKey: getEnv("GIGACHAT_API_KEY", ""),
 		},
 		SaluteSpeech: SaluteSpeechConfig{
-			AuthURL:          getEnv("SALUTE_SPEECH_AUTH_URL", "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"),
-			AuthorizationKey: getEnv("SALUTE_SPEECH_AUTHORIZATION_KEY", ""),
-			Scope:            getEnv("SALUTE_SPEECH_SCOPE", "SALUTE_SPEECH_PERS"),
-			APIBaseURL:       getEnv("SALUTE_SPEECH_API_BASE_URL", "https://smartspeech.sber.ru/rest/v1"),
-			UploadPath:       getEnv("SALUTE_SPEECH_UPLOAD_PATH", "/data:upload"),
-			RecognizePath:    getEnv("SALUTE_SPEECH_RECOGNIZE_PATH", "/speech:async_recognize"),
-			StatusPath:       getEnv("SALUTE_SPEECH_STATUS_PATH", "/task:get"),
-			DownloadPath:     getEnv("SALUTE_SPEECH_DOWNLOAD_PATH", "/data:download"),
-			Model:            getEnv("SALUTE_SPEECH_MODEL", "general"),
-			Language:         getEnv("SALUTE_SPEECH_LANGUAGE", "ru-RU"),
-			AudioEncoding:    getEnv("SALUTE_SPEECH_AUDIO_ENCODING", "PCM_S16LE"),
-			SampleRate:       getEnvInt("SALUTE_SPEECH_SAMPLE_RATE", 16000),
-			ChannelsCount:    getEnvInt("SALUTE_SPEECH_CHANNELS_COUNT", 1),
-			PollInterval:     getEnvDuration("SALUTE_SPEECH_POLL_INTERVAL", 2*time.Second),
-			PollTimeout:      getEnvDuration("SALUTE_SPEECH_POLL_TIMEOUT", 2*time.Minute),
-			HTTPTimeout:      getEnvDuration("SALUTE_SPEECH_HTTP_TIMEOUT", 30*time.Second),
+			AuthURL:                  getEnv("SALUTE_SPEECH_AUTH_URL", "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"),
+			AuthorizationKey:         getEnv("SALUTE_SPEECH_AUTHORIZATION_KEY", ""),
+			Scope:                    getEnv("SALUTE_SPEECH_SCOPE", "SALUTE_SPEECH_PERS"),
+			APIBaseURL:               getEnv("SALUTE_SPEECH_API_BASE_URL", "https://smartspeech.sber.ru/rest/v1"),
+			UploadPath:               getEnv("SALUTE_SPEECH_UPLOAD_PATH", "/data:upload"),
+			RecognizePath:            getEnv("SALUTE_SPEECH_RECOGNIZE_PATH", "/speech:async_recognize"),
+			StatusPath:               getEnv("SALUTE_SPEECH_STATUS_PATH", "/task:get"),
+			DownloadPath:             getEnv("SALUTE_SPEECH_DOWNLOAD_PATH", "/data:download"),
+			Model:                    getEnv("SALUTE_SPEECH_MODEL", "general"),
+			Language:                 getEnv("SALUTE_SPEECH_LANGUAGE", "ru-RU"),
+			AudioEncoding:            getEnv("SALUTE_SPEECH_AUDIO_ENCODING", "PCM_S16LE"),
+			SampleRate:               getEnvInt("SALUTE_SPEECH_SAMPLE_RATE", 16000),
+			ChannelsCount:            getEnvInt("SALUTE_SPEECH_CHANNELS_COUNT", 1),
+			SpeakerSeparationEnabled: getEnvBool("SALUTE_SPEECH_SPEAKER_SEPARATION_ENABLED", true),
+			SpeakerMaxCount:          getEnvInt("SALUTE_SPEECH_SPEAKER_MAX_COUNT", 10),
+			PollInterval:             getEnvDuration("SALUTE_SPEECH_POLL_INTERVAL", 2*time.Second),
+			PollTimeout:              getEnvDuration("SALUTE_SPEECH_POLL_TIMEOUT", 2*time.Minute),
+			HTTPTimeout:              getEnvDuration("SALUTE_SPEECH_HTTP_TIMEOUT", 30*time.Second),
 		},
 		Telegram: TelegramConfig{
 			BotToken: getEnv("TELEGRAM_BOT_TOKEN", ""),

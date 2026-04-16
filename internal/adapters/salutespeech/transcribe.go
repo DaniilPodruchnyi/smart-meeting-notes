@@ -103,15 +103,24 @@ func (c *Client) upload(ctx context.Context, audio []byte, contentType string) (
 func (c *Client) createRecognitionTask(ctx context.Context, requestFileID string) (string, error) {
 	logInfo("creating task", "request_file_id", requestFileID)
 
+	options := recognizeOptions{
+		Model:         c.cfg.Model,
+		Language:      c.cfg.Language,
+		AudioEncoding: c.cfg.AudioEncoding,
+		SampleRate:    c.cfg.SampleRate,
+		ChannelsCount: c.cfg.ChannelsCount,
+	}
+	if c.cfg.SpeakerSeparationEnabled {
+		options.SpeakerSeparationOptions = &speakerSeparationOptions{
+			Enable:                true,
+			EnableOnlyMainSpeaker: false,
+			Count:                 clampSpeakerCount(c.cfg.SpeakerMaxCount),
+		}
+	}
+
 	payload, err := json.Marshal(recognizeRequest{
 		RequestFileID: requestFileID,
-		Options: recognizeOptions{
-			Model:         c.cfg.Model,
-			Language:      c.cfg.Language,
-			AudioEncoding: c.cfg.AudioEncoding,
-			SampleRate:    c.cfg.SampleRate,
-			ChannelsCount: c.cfg.ChannelsCount,
-		},
+		Options:       options,
 	})
 	if err != nil {
 		return "", fmt.Errorf("salutespeech: marshal recognize request: %w", err)
@@ -128,6 +137,16 @@ func (c *Client) createRecognitionTask(ctx context.Context, requestFileID string
 		return "", errors.New("salutespeech: task id is empty")
 	}
 	return env.Result.ID, nil
+}
+
+func clampSpeakerCount(n int) int {
+	if n < 1 {
+		return 1
+	}
+	if n > 10 {
+		return 10
+	}
+	return n
 }
 
 func (c *Client) waitTaskDone(ctx context.Context, taskID string) (string, error) {
@@ -366,7 +385,7 @@ func extractSegmentText(results []sttResult) string {
 
 func speakerLabel(speakerID int) string {
 	if speakerID < 0 {
-		return "Спикер"
+		return "[неопределен]"
 	}
 	return "Спикер " + strconv.Itoa(speakerID+1)
 }

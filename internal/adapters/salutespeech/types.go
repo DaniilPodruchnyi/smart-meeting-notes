@@ -27,11 +27,18 @@ type recognizeRequest struct {
 }
 
 type recognizeOptions struct {
-	Model         string `json:"model"`
-	Language      string `json:"language"`
-	AudioEncoding string `json:"audio_encoding"`
-	SampleRate    int    `json:"sample_rate"`
-	ChannelsCount int    `json:"channels_count"`
+	Model                    string                    `json:"model"`
+	Language                 string                    `json:"language"`
+	AudioEncoding            string                    `json:"audio_encoding"`
+	SampleRate               int                       `json:"sample_rate"`
+	ChannelsCount            int                       `json:"channels_count"`
+	SpeakerSeparationOptions *speakerSeparationOptions `json:"speaker_separation_options,omitempty"`
+}
+
+type speakerSeparationOptions struct {
+	Enable                bool `json:"enable"`
+	EnableOnlyMainSpeaker bool `json:"enable_only_main_speaker"`
+	Count                 int  `json:"count"`
 }
 
 type statusRequest struct {
