@@ -2,20 +2,9 @@ package usecase
 
 import (
 	"bytes"
-	"encoding/binary"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
-
-	"github.com/hajimehoshi/go-mp3"
-)
-
-// Параметры кодирования аудио
-const (
-	sampleRate = 16000 // Частота дискретизации 16 кГц
-	channels   = 1     // Mono канал
-	bitDepth   = 16    // 16 бит на семпл
 )
 
 // convertAudioToWav преобразует аудио данные в нужный формат
@@ -24,21 +13,36 @@ func convertAudioToWav(audioData []byte) ([]byte, string, string, error) {
 	format := detectFormat(audioData)
 
 	switch format {
-	case "audio/ogg", "video/mp4", "video/webm", "video/avi", "audio/mpeg":
-		// Все форматы конвертируем через ffmpeg - это универсальнее
-		data, err := convertOggToPcm(audioData)
-		return data, "audio/pcm;rate=16000", "PCM_S16LE", err
-	case "audio/wav":
-		data, err := convertWavToWav(audioData)
+	case "audio/ogg", "audio/mpeg", "audio/wav", "audio/flac", "video/mp4", "video/webm", "video/avi":
+		// Универсальный пайплайн: всегда приводим вход к WAV PCM 16kHz mono.
+		data, err := convertToPCM16kMono(audioData, format)
 		return data, "audio/pcm;rate=16000", "PCM_S16LE", err
 	default:
 		return nil, "", "", fmt.Errorf("неподдерживаемый формат аудио: используйте голосовые сообщения telegram")
 	}
 }
 
-// convertOggToPcm преобразует OGG в PCM используя ffmpeg
-func convertOggToPcm(data []byte) ([]byte, error) {
-	inputPath := "/tmp/smartmeet_input.ogg"
+// convertToPCM16kMono преобразует входной аудио/видео поток в WAV PCM 16kHz mono через ffmpeg.
+func convertToPCM16kMono(data []byte, format string) ([]byte, error) {
+	inputPath := "/tmp/smartmeet_input"
+	switch format {
+	case "audio/ogg":
+		inputPath += ".ogg"
+	case "audio/mpeg":
+		inputPath += ".mp3"
+	case "audio/wav":
+		inputPath += ".wav"
+	case "audio/flac":
+		inputPath += ".flac"
+	case "video/mp4":
+		inputPath += ".mp4"
+	case "video/webm":
+		inputPath += ".webm"
+	case "video/avi":
+		inputPath += ".avi"
+	default:
+		inputPath += ".bin"
+	}
 	outputPath := "/tmp/smartmeet_output.wav"
 
 	if err := os.WriteFile(inputPath, data, 0644); err != nil {
@@ -95,7 +99,7 @@ func detectFormat(data []byte) string {
 		return "audio/flac"
 	}
 	// MP4/M4A формат (включая video mp4)
-	if bytes.Equal(data[:4], []byte("ftyp")) {
+	if len(data) >= 8 && bytes.Equal(data[4:8], []byte("ftyp")) {
 		return "video/mp4"
 	}
 	// WebM формат
@@ -108,140 +112,4 @@ func detectFormat(data []byte) string {
 	}
 
 	return ""
-}
-
-// convertMp3ToWav преобразует MP3 в WAV
-func convertMp3ToWav(data []byte) ([]byte, error) {
-	reader := bytes.NewReader(data)
-	decoder, err := mp3.NewDecoder(reader)
-	if err != nil {
-		return nil, fmt.Errorf("создание декодера mp3: %w", err)
-	}
-
-	pcmData, err := io.ReadAll(decoder)
-	if err != nil {
-		return nil, fmt.Errorf("декодирование mp3: %w", err)
-	}
-
-	resampled, err := resampleTo16kHz(pcmData, int(decoder.SampleRate()), sampleRate)
-	if err != nil {
-		return nil, fmt.Errorf("ресемплинг mp3: %w", err)
-	}
-
-	return encodeToWav(resampled)
-}
-
-// convertWavToWav преобразует WAV в нужный формат
-func convertWavToWav(data []byte) ([]byte, error) {
-	reader := bytes.NewReader(data)
-	decoder := NewWavDecoder(reader)
-
-	pcmData, err := io.ReadAll(decoder)
-	if err != nil {
-		return nil, fmt.Errorf("декодирование wav: %w", err)
-	}
-
-	if decoder.SampleRate() != uint32(sampleRate) {
-		resampled, err := resampleTo16kHz(pcmData, int(decoder.SampleRate()), sampleRate)
-		if err != nil {
-			return nil, fmt.Errorf("ресемплинг wav: %w", err)
-		}
-		return encodeToWav(resampled)
-	}
-
-	return encodeToWav(pcmData)
-}
-
-// resampleTo16kHz выполняет ресемплинг к частоте 16 кГц
-func resampleTo16kHz(data []byte, srcRate, dstRate int) ([]byte, error) {
-	if srcRate == dstRate {
-		return data, nil
-	}
-
-	ratio := float64(dstRate) / float64(srcRate)
-	newLen := int(float64(len(data)) * ratio)
-	result := make([]byte, newLen)
-
-	var acc float64
-	count := 0
-
-	for i := 0; i < newLen; i++ {
-		pos := float64(i) / ratio
-		idx := int(pos)
-		frac := pos - float64(idx)
-
-		if idx+1 < len(data) {
-			sample := float64(int(data[idx]))*(1-frac) + float64(int(data[idx+1]))*frac
-			acc += sample
-		}
-		count++
-
-		if count == channels {
-			var val int16
-			if acc/float64(channels) > 32767 {
-				val = 32767
-			} else if acc/float64(channels) < -32768 {
-				val = -32768
-			} else {
-				val = int16(acc / float64(channels))
-			}
-			binary.LittleEndian.PutUint16(result[i*2:], uint16(val))
-			acc = 0
-			count = 0
-		}
-	}
-
-	return result, nil
-}
-
-// encodeToWav кодирует PCM данные в WAV формат
-func encodeToWav(pcmData []byte) ([]byte, error) {
-	buf := new(bytes.Buffer)
-
-	var riff = []byte("RIFF")
-	var wave = []byte("WAVE")
-	var fmtChunk = []byte("fmt ")
-	var dataChunk = []byte("data")
-
-	binary.Write(buf, binary.LittleEndian, riff)
-	binary.Write(buf, binary.LittleEndian, uint32(36+len(pcmData)))
-	binary.Write(buf, binary.LittleEndian, wave)
-	binary.Write(buf, binary.LittleEndian, fmtChunk)
-	binary.Write(buf, binary.LittleEndian, uint32(16))
-	binary.Write(buf, binary.LittleEndian, uint16(1))
-	binary.Write(buf, binary.LittleEndian, uint16(channels))
-	binary.Write(buf, binary.LittleEndian, uint32(sampleRate))
-	binary.Write(buf, binary.LittleEndian, uint32(sampleRate*channels*bitDepth/8))
-	binary.Write(buf, binary.LittleEndian, uint16(channels*bitDepth/8))
-	binary.Write(buf, binary.LittleEndian, uint16(bitDepth))
-	binary.Write(buf, binary.LittleEndian, dataChunk)
-	binary.Write(buf, binary.LittleEndian, uint32(len(pcmData)))
-	binary.Write(buf, binary.LittleEndian, pcmData)
-
-	return buf.Bytes(), nil
-}
-
-// WavDecoder декодирует WAV файлы
-type WavDecoder struct {
-	r          *bytes.Reader
-	sampleRate uint32
-}
-
-// NewWavDecoder создает новый декодер WAV
-func NewWavDecoder(r *bytes.Reader) *WavDecoder {
-	r.Seek(22, os.SEEK_SET)
-	var sr uint32
-	binary.Read(r, binary.LittleEndian, &sr)
-	r.Seek(44, os.SEEK_SET)
-	return &WavDecoder{r: r, sampleRate: sr}
-}
-
-// Read читает данные из WAV файла
-func (w *WavDecoder) Read(p []byte) (int, error) {
-	return w.r.Read(p)
-}
-
-// SampleRate возвращает частоту дискретизации
-func (w *WavDecoder) SampleRate() uint32 {
-	return w.sampleRate
 }
