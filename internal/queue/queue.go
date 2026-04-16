@@ -3,6 +3,7 @@ package queue
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 )
 
 type MessageType string
@@ -28,13 +29,19 @@ type Handler func(ctx context.Context, msg Message) error
 
 type Queue struct {
 	mu       sync.RWMutex
-	subs     map[int64]map[MessageType]Handler
+	subs     map[int64]map[MessageType]Handler // key: chatID
 	workers  int
 	msgChan  chan Message
 	workerFn func(ctx context.Context, msg Message) error
 	wg       sync.WaitGroup
 	ctx      context.Context
 	cancel   context.CancelFunc
+
+	startOnce sync.Once
+	stopOnce  sync.Once
+
+	stopped      atomic.Bool
+	droppedCount atomic.Uint64
 }
 
 func New(ctx context.Context, workers int) *Queue {
@@ -49,81 +56,122 @@ func New(ctx context.Context, workers int) *Queue {
 }
 
 func (q *Queue) Start(workerFn func(ctx context.Context, msg Message) error) {
-	q.workerFn = workerFn
-	for i := 0; i < q.workers; i++ {
-		q.wg.Add(1)
-		go q.worker(q.ctx)
-	}
+	q.startOnce.Do(func() {
+		q.workerFn = workerFn
+		for i := 0; i < q.workers; i++ {
+			q.wg.Add(1)
+			go q.worker(q.ctx)
+		}
+	})
 }
 
 func (q *Queue) worker(ctx context.Context) {
 	defer q.wg.Done()
+
+	defer func() {
+		if recover() != nil {
+			// Не даем панике уронить весь пул воркеров.
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case msg := <-q.msgChan:
+		case msg, ok := <-q.msgChan:
+			if !ok {
+				return
+			}
 			if q.workerFn != nil {
+				func() {
+					defer func() {
+						if recover() != nil {
+							q.sendToSubs(msg.ChatID, Message{
+								Type:    MessageTypeError,
+								ChatID:  msg.ChatID,
+								Payload: "panic в обработчике очереди",
+							})
+						}
+					}()
+
 				if err := q.workerFn(ctx, msg); err != nil {
 					q.sendToSubs(msg.ChatID, Message{Type: MessageTypeError, ChatID: msg.ChatID, Payload: err.Error()})
 				}
+				}()
 			}
 		}
 	}
 }
 
-func (q *Queue) Subscribe(userID int64, msgType MessageType, h Handler) {
+func (q *Queue) Subscribe(chatID int64, msgType MessageType, h Handler) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.subs[userID] == nil {
-		q.subs[userID] = make(map[MessageType]Handler)
+	if q.subs[chatID] == nil {
+		q.subs[chatID] = make(map[MessageType]Handler)
 	}
-	q.subs[userID][msgType] = h
+	q.subs[chatID][msgType] = h
 }
 
-func (q *Queue) Unsubscribe(userID int64, msgType MessageType) {
+func (q *Queue) Unsubscribe(chatID int64, msgType MessageType) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.subs[userID] != nil {
-		delete(q.subs[userID], msgType)
+	if q.subs[chatID] != nil {
+		delete(q.subs[chatID], msgType)
 	}
 }
 
 func (q *Queue) Publish(msg Message) {
+	if q.stopped.Load() {
+		q.droppedCount.Add(1)
+		return
+	}
+
 	select {
 	case q.msgChan <- msg:
 	default:
+		q.droppedCount.Add(1)
 	}
 }
 
 func (q *Queue) sendToSubs(chatID int64, msg Message) {
 	q.mu.RLock()
-	defer q.mu.RUnlock()
 	handlers, ok := q.subs[chatID]
 	if !ok {
+		q.mu.RUnlock()
 		return
 	}
 	handler, ok := handlers[msg.Type]
+	q.mu.RUnlock()
+
 	if ok {
-		go handler(q.ctx, msg)
+		_ = handler(q.ctx, msg)
 	}
 }
 
 func (q *Queue) SendToUser(chatID int64, msg Message) {
 	q.mu.RLock()
-	defer q.mu.RUnlock()
 	handlers, ok := q.subs[chatID]
 	if !ok {
+		q.mu.RUnlock()
 		return
 	}
 	handler, ok := handlers[msg.Type]
+	q.mu.RUnlock()
+
 	if ok {
-		handler(q.ctx, msg)
+		_ = handler(q.ctx, msg)
 	}
 }
 
 func (q *Queue) Stop() {
-	q.cancel()
-	q.wg.Wait()
-	close(q.msgChan)
+	q.stopOnce.Do(func() {
+		q.stopped.Store(true)
+		q.cancel()
+		close(q.msgChan)
+		q.wg.Wait()
+	})
+}
+
+func (q *Queue) DroppedMessages() uint64 {
+	return q.droppedCount.Load()
 }

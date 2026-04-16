@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"go.uber.org/zap"
 
 	"smart-meeting-notes/internal/adapters/salutespeech"
-	"smart-meeting-notes/internal/app/repository"
 	"smart-meeting-notes/internal/domain"
 	"smart-meeting-notes/internal/queue"
 )
@@ -21,13 +21,30 @@ const (
 
 // MeetingService сервис для управления встречами
 type MeetingService struct {
-	meetingRepo  repository.MeetingRepository
-	userRepo     repository.UserRepository
+	meetingRepo  MeetingRepository
+	userRepo     UserRepository
 	saluteClient SaluteSpeechClient
 	gigaClient   GigaChatClient
 	queue        *queue.Queue
 	logger       *zap.Logger
 	sendToUser   func(chatID int64, text string)
+}
+
+// MeetingRepository описывает хранилище встреч для usecase-слоя.
+type MeetingRepository interface {
+	Create(ctx context.Context, meeting *domain.Meeting) error
+	GetByID(ctx context.Context, id int64) (*domain.Meeting, error)
+	GetByUserID(ctx context.Context, userID int64) ([]domain.Meeting, error)
+	Search(ctx context.Context, userID int64, query string) ([]domain.Meeting, error)
+	SmartSearch(ctx context.Context, userID int64, queryEmbedding []float64, minScore float64, limit int) ([]domain.Meeting, error)
+	UpdateTranscript(ctx context.Context, id int64, transcript string) error
+	UpdateSummary(ctx context.Context, id int64, summary string) error
+}
+
+// UserRepository описывает хранилище пользователей для usecase-слоя.
+type UserRepository interface {
+	Create(ctx context.Context, user *domain.User) error
+	GetByTelegramID(ctx context.Context, telegramID int64) (*domain.User, error)
 }
 
 // SaluteSpeechClient интерфейс для транскрипции аудио
@@ -44,8 +61,8 @@ type GigaChatClient interface {
 
 // NewMeetingService создает новый экземпляр сервиса встреч
 func NewMeetingService(
-	meetingRepo repository.MeetingRepository,
-	userRepo repository.UserRepository,
+	meetingRepo MeetingRepository,
+	userRepo UserRepository,
 	saluteClient SaluteSpeechClient,
 	gigaClient GigaChatClient,
 	q *queue.Queue,
@@ -541,8 +558,10 @@ func (s *MeetingService) buildRoleTranscript(ctx context.Context, rawTranscript 
 		"Правила:\n" +
 		"1) Верни только текст диалога без markdown.\n" +
 		"2) Используй формат строк: \"Спикер 1: ...\", \"Спикер 2: ...\".\n" +
-		"3) Сохраняй смысл и порядок реплик, не выдумывай факты.\n" +
-		"4) Если уверенности в разделении мало, сделай минимально вероятное разбиение.\n\n" +
+		"3) НЕЛЬЗЯ добавлять новые фразы, детали, эмоции и реплики, которых нет в исходном тексте.\n" +
+		"4) НЕЛЬЗЯ пересказывать и литературно улучшать текст. Разрешено только расставить границы реплик и префиксы спикеров.\n" +
+		"5) Сохраняй исходные слова и порядок максимально близко к оригиналу.\n" +
+		"6) Если уверенности в разделении мало, делай минимальные изменения: дели на крупные фрагменты, но не сочиняй.\n\n" +
 		"Сырая транскрипция:\n" + rawTranscript
 
 	roleTranscript, err := s.gigaClient.Chat(ctx, prompt)
@@ -550,7 +569,77 @@ func (s *MeetingService) buildRoleTranscript(ctx context.Context, rawTranscript 
 		return "", err
 	}
 	roleTranscript = cleanTelegramText(roleTranscript)
-	return strings.TrimSpace(roleTranscript), nil
+	roleTranscript = strings.TrimSpace(roleTranscript)
+	if roleTranscript == "" {
+		return "", fmt.Errorf("пустой ответ ролевой транскрипции")
+	}
+
+	if !isRoleTranscriptFaithful(rawTranscript, roleTranscript) {
+		return "", fmt.Errorf("ролевая транскрипция слишком сильно отличается от исходного текста")
+	}
+
+	return roleTranscript, nil
+}
+
+func isRoleTranscriptFaithful(rawTranscript, roleTranscript string) bool {
+	rawTokens := tokenizeTranscript(rawTranscript)
+	roleTokens := tokenizeTranscript(stripSpeakerPrefixes(roleTranscript))
+	if len(rawTokens) == 0 || len(roleTokens) == 0 {
+		return false
+	}
+
+	// Базовая проверка длины: если текст "раздулся" или слишком сжался — вероятна галлюцинация/пересказ.
+	lengthRatio := float64(len(roleTokens)) / float64(len(rawTokens))
+	if lengthRatio < 0.7 || lengthRatio > 1.3 {
+		return false
+	}
+
+	// Проверка покрытия словарей: роль-текст должен в основном состоять из слов исходника.
+	rawSet := make(map[string]struct{}, len(rawTokens))
+	for _, t := range rawTokens {
+		rawSet[t] = struct{}{}
+	}
+
+	matched := 0
+	for _, t := range roleTokens {
+		if _, ok := rawSet[t]; ok {
+			matched++
+		}
+	}
+
+	coverage := float64(matched) / float64(len(roleTokens))
+	return coverage >= 0.85
+}
+
+func stripSpeakerPrefixes(text string) string {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		colon := strings.Index(line, ":")
+		if colon > 0 {
+			prefix := strings.TrimSpace(line[:colon])
+			if strings.HasPrefix(prefix, "Спикер") {
+				line = strings.TrimSpace(line[colon+1:])
+			}
+		}
+		lines[i] = line
+	}
+	return strings.Join(lines, " ")
+}
+
+func tokenizeTranscript(text string) []string {
+	normalized := strings.ToLower(text)
+	parts := strings.FieldsFunc(normalized, func(r rune) bool {
+		// Сохраняем буквы/цифры, остальное считаем разделителями.
+		return !(unicode.IsLetter(r) || unicode.IsDigit(r))
+	})
+	tokens := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p != "" {
+			tokens = append(tokens, p)
+		}
+	}
+	return tokens
 }
 
 func hasAtLeastTwoSpeakers(transcript string) bool {
